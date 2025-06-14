@@ -10,17 +10,33 @@
 #include <err.h>
 #include <time.h>
 #include <sys/wait.h>
-#include <sys/resource.h>
 #include <signal.h>
 #include <limits.h>
 #include <getopt.h>
 #include "expr.h"
-struct expr *ep=NULL,*ept=NULL;
 struct expr_symset *es=NULL;
+int xopen(const char *path){
+	int r;
+	r=open(path,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR);
+	if(r<0){
+		err(EXIT_FAILURE,"cannot open \"%s\"",path);
+	}
+	return r;
+}
+void *xmalloc(size_t size){
+	void *r;
+	r=malloc(size);
+	if(!r){
+		err(EXIT_FAILURE,"malloc");
+	}
+	return r;
+}
+struct expr *ep=NULL,*ept=NULL;
 unsigned long sample_freq=44100;
 double sample_freq_d=44100.0,msg_time_interval=0.05;
 volatile double vf=0.0;
 const char *outfile=NULL;
+char hotsym[EXPR_SYMLEN]={"hot"};
 int outfd=-1,quiet=0,raw=0;
 #if !defined(U8)&&!defined(U16BE)&&!defined(U32BE)&&!defined(S32LE)
 #define S32LE
@@ -166,6 +182,8 @@ const struct option ops[]={
 	{"quiet",2,NULL,'q'},
 	{"buffer",2,NULL,'b'},
 	{"raw",0,NULL,'r'},
+	{"hot",1,NULL,'f'},
+	{"hotsym",1,NULL,'H'},
 	{NULL}
 };
 double det2freq(unsigned long det){
@@ -173,25 +191,9 @@ double det2freq(unsigned long det){
 		return 0.0;
 	return sample_freq_d/(det*2);
 }
-int xopen(const char *path){
-	int r;
-	r=open(path,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR);
-	if(r<0){
-		err(EXIT_FAILURE,"cannot open \"%s\"",path);
-	}
-	return r;
-}
-void *xmalloc(size_t size){
-	void *r;
-	r=malloc(size);
-	if(!r){
-		err(EXIT_FAILURE,"malloc");
-	}
-	return r;
-}
-#define show(a,b) if(!quiet)fprintf(stderr,"\033[K\0337%.2lfs cost\t%.2lfs written\tfrequency=%.2lf (inaccurate)\0338",a,b,det2freq(det));
+#define show(a,b) if(!quiet){if(sndbkn<0.0)fprintf(stderr,"\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else fprintf(stderr,"\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn-st);}
 int main(int argc,char **argv){
-	double st,lt,ct,x,ovf;
+	double st,lt,ct,x,ovf,sndbkn;
 	unsigned long t,det,let;
 	ampl_type ampl;
 	int status;
@@ -204,6 +206,8 @@ int main(int argc,char **argv){
 				"\t-q,--quiet[=time]\tdo not output message to stderr\n"
 				"\t-b,--buffer[=size]\tcreate a buffer to write data,default size is PIPE_BUF\n"
 				"\t-r,--raw output raw data to stdout or file\n"
+				"\t-f,--hot expression\thot function\n"
+				"\t-H,--hotsym symbol\n"
 				"format: " ampl_fmt "\n"
 				"ffplay/ffmpeg is required in playing/file-output mode.\n"
 				,argv[0]);
@@ -213,7 +217,7 @@ int main(int argc,char **argv){
 	signal(SIGPIPE,sig);
 	signal(SIGINT,sig);
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::r",ops,NULL)){
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rf:H:",ops,NULL)){
 			case 'c':
 				if(ept)
 					errx(EXIT_FAILURE,"cond redefined");
@@ -245,6 +249,15 @@ int main(int argc,char **argv){
 			case 'r':
 				raw=1;
 				break;
+			case 'f':
+				if(!expr_symset_add(es,hotsym,EXPR_HOTFUNCTION,optarg,"t"))
+					errx(EXIT_FAILURE,"cannot add hot function.");
+				break;
+			case 'H':
+				if(strlen(optarg)>=EXPR_SYMLEN)
+					errx(EXIT_FAILURE,"symbol of hot function is too long.");
+				strcpy(hotsym,optarg);
+				break;
 			case '?':
 				exit(EXIT_FAILURE);
 				break;
@@ -268,6 +281,7 @@ break2:
 	ovf=0.0;
 	let=0;
 	det=0;
+	sndbkn=-1.0;
 	show(0.0,0.0);
 	for(t=0;;++t){
 		x=(double)t/sample_freq;
@@ -278,8 +292,10 @@ break2:
 		}
 		if(vf>1){
 			vf=1;
+			sndbkn=ct;
 		}else if(vf<-1){
 			vf=-1;
+			sndbkn=ct;
 		}
 		if(vf>ovf&&status){
 			det=t-let;
