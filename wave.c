@@ -10,6 +10,7 @@
 #include <err.h>
 #include <time.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <signal.h>
 #include <limits.h>
 #include <getopt.h>
@@ -31,13 +32,116 @@ void *xmalloc(size_t size){
 	}
 	return r;
 }
+int ff_output=0,quiet=0;
+#define out(fmt,...) ((ff_output||quiet)?0:fprintf(stderr,(fmt),__VA_ARGS__))
+#define outc(c) ((ff_output||quiet)?0:fputc((c),stderr))
+//#define TEXT_ENABLED
+#ifdef TEXT_ENABLED
+static void *xrealloc(void *old,size_t size){
+	void *r;
+	r=old?realloc(old,size):malloc(size);
+	if(!r){
+		err(EXIT_FAILURE,"realloc");
+	}
+	return r;
+}
+#include "texts/text.h"
+struct sbmp **sbuf=NULL;
+size_t scount=0;
+char dbuf[TEXT_MAXOSIZE];
+void sadd(const struct sbmp *sp){
+	sbuf=xrealloc(sbuf,(++scount)*sizeof(void *));
+	sbuf[scount-1]=xmalloc(sp->size+sizeof(struct sbmp));
+	memcpy(sbuf[scount-1],sp,sp->size+sizeof(struct sbmp));
+}
+void sfree(void){
+	for(size_t i=0;i<scount;++i){
+		free(sbuf[i]);
+	}
+	free(sbuf);
+}
+size_t text_width=0;
+void sbmp2f(int c){
+	const struct sbmp *sp;
+	sp=text_getsbmp(c);
+	if(!sp)
+		errx(EXIT_FAILURE,"cannot found char with ascii %u\n",c);
+	if(sbmp_decompress(sp,(struct sbmp *)dbuf))
+		errx(EXIT_FAILURE,"cannot decompress bitmap with ascii %u\n",c);
+	sadd((struct sbmp *)dbuf);
+	text_width+=((struct sbmp *)dbuf)->width;
+}
+int reverse=0,mirror=0,vmirror=0,text_ok=0;
+double text_end=0.0;
+double tfinterval=0.0078125;
+void text_scan(const char *p){
+	const char *p1;
+	if(!*p)
+		return;
+	if(reverse){
+		p1=p+strlen(p)-1;
+		while(p1>=p){
+			sbmp2f(*p1);
+			--p1;
+		}
+	}else {
+		do{
+			sbmp2f(*p);
+			++p;
+		}while(*p);
+	}
+	text_end=(text_width+1)*tfinterval;
+}
+int32_t ratio=128;
+double freq_lowest=512,freq_functor=8;
+double ftext(double t0){
+	unsigned long t,n;
+	struct sbmp *sp;
+	double sum;
+	int32_t h,w,dy;
+	if(!sbuf){
+		return 0.0;
+	}
+	t=floor(t0/tfinterval);
+	n=0;
+next:
+	sp=sbuf[n];
+	w=sp->width;
+	if(t>=w){
+		++n;
+		if(n<scount){
+			t-=w;
+			goto next;
+		}
+		return 0.0;
+	}
+	if(mirror)
+		t=w-t-1;
+	h=sp->height;
+	sum=0.0;
+	dy=(h+ratio-1)/ratio;
+	for(int32_t y=h-1;y>=0;y-=dy){
+		if(!sbmp_tstpixel(sp,t,y))
+			continue;
+		sum+=sin((2*M_PI)*((vmirror?h-y-1:y)*freq_functor+freq_lowest)*t0);
+	}
+	sum/=ratio;
+	return sum;
+}
+void text_init(){
+	if(!expr_symset_add(es,"text",EXPR_FUNCTION,ftext))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"text_end",EXPR_VARIABLE,&text_end))
+		err(EXIT_FAILURE,"expr_symset_add");
+}
+#endif
 struct expr *ep=NULL,*ept=NULL;
 unsigned long sample_freq=44100;
 double sample_freq_d=44100.0,msg_time_interval=0.05;
 volatile double vf=0.0;
 const char *outfile=NULL;
 char hotsym[EXPR_SYMLEN]={"hot"};
-int outfd=-1,quiet=0,raw=0;
+int outfd=-1,raw=0;
 #if !defined(U8)&&!defined(U16BE)&&!defined(U32BE)&&!defined(S32LE)
 #define S32LE
 #endif
@@ -82,6 +186,9 @@ __attribute__((constructor)) void atstart(void){
 		err(EXIT_FAILURE,"new_expr_symset");
 	if(!expr_symset_add(es,"y",EXPR_VARIABLE,&vf))
 		err(EXIT_FAILURE,"expr_symset_add");
+#ifdef TEXT_ENABLED
+	text_init();
+#endif
 }
 __attribute__((destructor)) void atend(void){
 	if(ep)
@@ -93,6 +200,9 @@ __attribute__((destructor)) void atend(void){
 		close(outfd);
 	if(buffer)
 		free(buffer);
+#ifdef TEXT_ENABLED
+	sfree();
+#endif
 }
 #define ffplay_arg "-f",ampl_fmt,"-ar",ar,"-i",pipename,"-autoexit","-nodisp","-hide_banner"
 #define ffmpeg_arg "-y","-f",ampl_fmt,"-ar",ar,"-i",pipename,"-hide_banner"
@@ -109,15 +219,17 @@ int getpipe(void){
 	if(pid<0)
 		err(EXIT_FAILURE,"fork");
 	if(!pid){
-		fd=open("/dev/null",O_RDWR);
-		if(fd>=0){
-			close(STDERR_FILENO);
-			close(STDOUT_FILENO);
-			close(STDIN_FILENO);
-			dup2(fd,STDERR_FILENO);
-			dup2(fd,STDOUT_FILENO);
-			dup2(fd,STDIN_FILENO);
-			close(fd);
+		if(!ff_output){
+			fd=open("/dev/null",O_RDWR);
+			if(fd>=0){
+				close(STDERR_FILENO);
+				close(STDOUT_FILENO);
+				close(STDIN_FILENO);
+				dup2(fd,STDERR_FILENO);
+				dup2(fd,STDOUT_FILENO);
+				dup2(fd,STDIN_FILENO);
+				close(fd);
+			}
 		}
 		snprintf(ar,32,"%lu",sample_freq);
 		snprintf(pipename,32,"pipe:%d",pipefd[0]);
@@ -182,8 +294,19 @@ const struct option ops[]={
 	{"quiet",2,NULL,'q'},
 	{"buffer",2,NULL,'b'},
 	{"raw",0,NULL,'r'},
-	{"hot",1,NULL,'f'},
+	{"hot",1,NULL,'h'},
 	{"hotsym",1,NULL,'H'},
+	{"ff-output",0,NULL,'f'},
+#ifdef TEXT_ENABLED
+	{"text",1,NULL,'T'},
+	{"text-reverse",0,NULL,'R'},
+	{"text-mirror",0,NULL,'M'},
+	{"text-vmirror",0,NULL,'V'},
+	{"text-freq-interval",1,NULL,'I'},
+	{"text-freq-lowest",1,NULL,'L'},
+	{"text-freq-functor",1,NULL,'F'},
+	{"text-ratio",1,NULL,'A'},
+#endif
 	{NULL}
 };
 double det2freq(unsigned long det){
@@ -191,7 +314,7 @@ double det2freq(unsigned long det){
 		return 0.0;
 	return sample_freq_d/(det*2);
 }
-#define show(a,b) if(!quiet){if(sndbkn<0.0)fprintf(stderr,"\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else fprintf(stderr,"\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn-st);}
+#define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn-st);}
 int main(int argc,char **argv){
 	double st,lt,ct,x,ovf,sndbkn;
 	unsigned long t,det,let;
@@ -201,23 +324,45 @@ int main(int argc,char **argv){
 		fprintf(stdout,"usage: %s [options] expression\n"
 				"\texpresion\tsuch as \"sin(4400*2*pi*t)\" which will generate a sine wave with a frequency of 4400Hz\n"
 				"\t-c,--cond expression\tcondition to stop\n"
-				"\t-s,--sample sample_rate (default=44100)\n"
+				"\t-s,--sample sample_rate (default=%lu)\n"
 				"\t-o,--output filename\n"
-				"\t-q,--quiet[=time]\tdo not output message to stderr\n"
-				"\t-b,--buffer[=size]\tcreate a buffer to write data,default size is PIPE_BUF\n"
+				"\t-q,--quiet[=time]\tdo not output message to screen\n"
+				"\t-b,--buffer[=size]\tcreate a buffer to write data,default size is PIPE_BUF(%zu)\n"
 				"\t-r,--raw output raw data to stdout or file\n"
-				"\t-f,--hot expression\thot function\n"
-				"\t-H,--hotsym symbol\n"
+				"\t-h,--hot expression\thot function\n"
+				"\t-f,--ff-output output message of ffplay/ffmpeg to screen\n"
+#ifdef TEXT_ENABLED
+				"\t-T,--text text\tgiven the in function text()\n"
+				"\t-R,--text-reverse\treverse the text\n"
+				"\t-M,--text-mirror\tmirror the text\n"
+				"\t-V,--text-vmirror\treverse the text vertically\n"
+				"\t-I,--text-freq-interval time (default=%lg)\n"
+				"\t-L,--text-freq-lowest freq (default=%lg)\n"
+				"\t-F,--text-freq-functor functor (default=%lg)\n"
+				"\t-A,--text-ratio ratio (default=%d)\n"
+#endif
+#ifdef TEXT_ENABLED
+				"text height: %d\n"
+#endif
 				"format: " ampl_fmt "\n"
 				"ffplay/ffmpeg is required in playing/file-output mode.\n"
-				,argv[0]);
+				"compiled on " __DATE__ " "  __TIME__ "\n"
+				,argv[0],sample_freq,(size_t)PIPE_BUF
+#ifdef TEXT_ENABLED
+				,tfinterval,freq_lowest,freq_functor,ratio,(int32_t)TEXT_HEIGHT
+#endif
+				);
 		return EXIT_SUCCESS;
 	}
 	opterr=1;
 	signal(SIGPIPE,sig);
 	signal(SIGINT,sig);
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::rf:H:",ops,NULL)){
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:f"
+#ifdef TEXT_ENABLED
+					"T:RMVI:L:F:A:"
+#endif
+					,ops,NULL)){
 			case 'c':
 				if(ept)
 					errx(EXIT_FAILURE,"cond redefined");
@@ -249,7 +394,7 @@ int main(int argc,char **argv){
 			case 'r':
 				raw=1;
 				break;
-			case 'f':
+			case 'h':
 				if(!expr_symset_add(es,hotsym,EXPR_HOTFUNCTION,optarg,"t"))
 					errx(EXIT_FAILURE,"cannot add hot function.");
 				break;
@@ -258,9 +403,52 @@ int main(int argc,char **argv){
 					errx(EXIT_FAILURE,"symbol of hot function is too long.");
 				strcpy(hotsym,optarg);
 				break;
+			case 'f':
+				ff_output=1;
+				break;
 			case '?':
 				exit(EXIT_FAILURE);
 				break;
+#ifdef TEXT_ENABLED
+#define text_ok_check(_c) if(text_ok)errx(EXIT_FAILURE,"option -" _c " must be used before --text/-T")
+
+			case 'T':
+				text_scan(optarg);
+				text_ok=1;
+				break;
+			case 'R':
+				text_ok_check("R");
+				reverse=1;
+				break;
+			case 'M':
+				text_ok_check("M");
+				mirror=1;
+				break;
+			case 'V':
+				text_ok_check("V");
+				vmirror=1;
+				break;
+			case 'I':
+				text_ok_check("I");
+				tfinterval=atod2(optarg);
+				if(tfinterval<=0.0)
+					errx(EXIT_FAILURE,"\"%s\" is not a positive number.",optarg);
+				break;
+			case 'L':
+				text_ok_check("L");
+				freq_lowest=atod2(optarg);
+				break;
+			case 'F':
+				text_ok_check("F");
+				freq_functor=atod2(optarg);
+				break;
+			case 'A':
+				text_ok_check("A");
+				ratio=(int32_t)atol2(optarg);
+				if(ratio<=0)
+					errx(EXIT_FAILURE,"\"%s\" is not a positive integer.",optarg);
+				break;
+#endif
 			case -1:
 				goto break2;
 		}
@@ -319,7 +507,7 @@ break2:
 			*(buffer_cur++)=ampl;
 		}
 		if(sat==1){
-			fputc('\n',stderr);
+			outc('\n');
 			if(waitpid(fpid,&status,0)>=0&&WIFEXITED(status))
 				errx(EXIT_FAILURE,"broken pipe (status:%d)",WEXITSTATUS(status));
 			errx(EXIT_FAILURE,"broken pipe");
@@ -336,7 +524,7 @@ break2:
 	close(outfd);
 	outfd=-1;
 	if(!quiet)
-		fprintf(stderr,"\ndata is written, %.2lfs remaining\n",x-(ct-st));
+		out("\ndata is written, %.2lfs remaining\n",x-(ct-st));
 	waitpid(fpid,NULL,0);
 	return EXIT_SUCCESS;
 }
