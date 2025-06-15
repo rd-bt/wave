@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <arpa/inet.h>
@@ -46,90 +47,136 @@ static void *xrealloc(void *old,size_t size){
 	return r;
 }
 #include "texts/text.h"
-struct sbmp **sbuf=NULL;
-size_t scount=0;
+struct text {
+	struct sbmp **sbuf;
+	size_t scount;
+	size_t text_width;
+	double tfinterval;
+	double freq_lowest,freq_functor;
+	int mirror,vmirror;
+	int32_t ratio,unused;
+} **defts=NULL;
+size_t dcount=0;
 char dbuf[TEXT_MAXOSIZE];
-void sadd(const struct sbmp *sp){
-	sbuf=xrealloc(sbuf,(++scount)*sizeof(void *));
-	sbuf[scount-1]=xmalloc(sp->size+sizeof(struct sbmp));
-	memcpy(sbuf[scount-1],sp,sp->size+sizeof(struct sbmp));
+void sadd(struct text *t,const struct sbmp *sp){
+	t->sbuf=xrealloc(t->sbuf,(++t->scount)*sizeof(void *));
+	t->sbuf[t->scount-1]=xmalloc(sp->size+sizeof(struct sbmp));
+	memcpy(t->sbuf[t->scount-1],sp,sp->size+sizeof(struct sbmp));
 }
-void sfree(void){
-	for(size_t i=0;i<scount;++i){
-		free(sbuf[i]);
+void sfree(struct text *t){
+	for(ptrdiff_t i=t->scount-1;i>=0;--i){
+		free(t->sbuf[i]);
 	}
-	free(sbuf);
+	free(t->sbuf);
 }
-size_t text_width=0;
-void sbmp2f(int c){
+void sfreeall(void){
+	for(ptrdiff_t i=dcount-1;i>=0;--i){
+		sfree(defts[i]);
+		free(defts[i]);
+	}
+	free(defts);
+}
+void sbmp2f(struct text *t,int c){
 	const struct sbmp *sp;
 	sp=text_getsbmp(c);
 	if(!sp)
-		errx(EXIT_FAILURE,"cannot found char with ascii %u\n",c);
+		errx(EXIT_FAILURE,"cannot found char with ascii %u",c);
 	if(sbmp_decompress(sp,(struct sbmp *)dbuf))
-		errx(EXIT_FAILURE,"cannot decompress bitmap with ascii %u\n",c);
-	sadd((struct sbmp *)dbuf);
-	text_width+=((struct sbmp *)dbuf)->width;
+		errx(EXIT_FAILURE,"cannot decompress bitmap with ascii %u",c);
+	sadd(t,(struct sbmp *)dbuf);
+	t->text_width+=((struct sbmp *)dbuf)->width;
 }
-int reverse=0,mirror=0,vmirror=0,text_ok=0;
+int reverse=0,mirror=0,vmirror=0;
+//int text_ok=0;
 double text_end=0.0;
 double tfinterval=0.0078125;
-void text_scan(const char *p){
+int32_t ratio=128;
+double freq_lowest=512,freq_functor=8;
+void text_scan(struct text *t,const char *p){
 	const char *p1;
+	double e;
 	if(!*p)
 		return;
 	if(reverse){
 		p1=p+strlen(p)-1;
 		while(p1>=p){
-			sbmp2f(*p1);
+			sbmp2f(t,*p1);
 			--p1;
 		}
 	}else {
 		do{
-			sbmp2f(*p);
+			sbmp2f(t,*p);
 			++p;
 		}while(*p);
 	}
-	text_end=(text_width+1)*tfinterval;
+	e=(t->text_width+1)*tfinterval;
+	if(e>text_end)
+		text_end=e;
 }
-int32_t ratio=128;
-double freq_lowest=512,freq_functor=8;
-double ftext(double t0){
+double ftext2(const struct text *restrict tp,double t0){
 	unsigned long t,n;
 	struct sbmp *sp;
 	double sum;
 	int32_t h,w,dy;
-	if(!sbuf){
+	if(!tp->sbuf){
 		return 0.0;
 	}
-	t=floor(t0/tfinterval);
+	t=floor(t0/tp->tfinterval);
 	n=0;
 next:
-	sp=sbuf[n];
+	sp=tp->sbuf[n];
 	w=sp->width;
 	if(t>=w){
 		++n;
-		if(n<scount){
+		if(n<tp->scount){
 			t-=w;
 			goto next;
 		}
 		return 0.0;
 	}
-	if(mirror)
+	if(tp->mirror)
 		t=w-t-1;
 	h=sp->height;
 	sum=0.0;
-	dy=(h+ratio-1)/ratio;
+	dy=(h+tp->ratio-1)/tp->ratio;
 	for(int32_t y=h-1;y>=0;y-=dy){
 		if(!sbmp_tstpixel(sp,t,y))
 			continue;
-		sum+=sin((2*M_PI)*((vmirror?h-y-1:y)*freq_functor+freq_lowest)*t0);
+		sum+=sin((2*M_PI)*((tp->vmirror?h-y-1:y)*tp->freq_functor+tp->freq_lowest)*t0);
 	}
-	sum/=ratio;
+	sum/=tp->ratio;
 	return sum;
+}
+double ftext(double t0){
+	return dcount?ftext2(defts[0],t0):0.0;
+}
+static double ftext2_md(size_t n,double *args){
+	n=(size_t)args[1];
+	return n<dcount?ftext2(defts[n],*args):0.0;
+}
+#define setfield(fld) t->fld=fld
+void tattr_init(struct text *t){
+	t->sbuf=NULL;
+	t->scount=0;
+	t->text_width=0;
+	setfield(tfinterval);
+	setfield(freq_lowest);
+	setfield(freq_functor);
+	setfield(mirror);
+	setfield(vmirror);
+	setfield(ratio);
+}
+struct text *newdeft(void){
+	struct text *r=xmalloc(sizeof(struct text));
+	defts=xrealloc(defts,(++dcount)*sizeof(void *));
+	tattr_init(r);
+	defts[dcount-1]=r;
+	return r;
 }
 void text_init(){
 	if(!expr_symset_add(es,"text",EXPR_FUNCTION,ftext))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"text2",EXPR_MDFUNCTION,ftext2_md,(size_t)2))
 		err(EXIT_FAILURE,"expr_symset_add");
 	if(!expr_symset_add(es,"text_end",EXPR_VARIABLE,&text_end))
 		err(EXIT_FAILURE,"expr_symset_add");
@@ -172,7 +219,7 @@ int outfd=-1,raw=0;
 #define ffmpeg_extra ,"-c:a","pcm_u8",
 #endif
 ampl_type *buffer=NULL,*buffer_cur=NULL,*buffer_end=NULL;
-size_t buffer_size=0;
+size_t buffer_size=PIPE_BUF;
 void setexpr(struct expr **p,const char *c){
 	int e;
 	char ei[EXPR_SYMLEN];
@@ -180,11 +227,14 @@ void setexpr(struct expr **p,const char *c){
 	if(!*p)
 		errx(EXIT_FAILURE,"%s:%s",expr_error(e),ei);
 }
+extern double sample_freq_d;
 __attribute__((constructor)) void atstart(void){
 	es=new_expr_symset();
 	if(!es)
 		err(EXIT_FAILURE,"new_expr_symset");
 	if(!expr_symset_add(es,"y",EXPR_VARIABLE,&vf))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"sample",EXPR_VARIABLE,&sample_freq_d))
 		err(EXIT_FAILURE,"expr_symset_add");
 #ifdef TEXT_ENABLED
 	text_init();
@@ -201,7 +251,7 @@ __attribute__((destructor)) void atend(void){
 	if(buffer)
 		free(buffer);
 #ifdef TEXT_ENABLED
-	sfree();
+	sfreeall();
 #endif
 }
 #define ffplay_arg "-f",ampl_fmt,"-ar",ar,"-i",pipename,"-autoexit","-nodisp","-hide_banner"
@@ -297,6 +347,7 @@ const struct option ops[]={
 	{"hot",1,NULL,'h'},
 	{"hotsym",1,NULL,'H'},
 	{"ff-output",0,NULL,'f'},
+	{"calc",2,NULL,'C'},
 #ifdef TEXT_ENABLED
 	{"text",1,NULL,'T'},
 	{"text-reverse",0,NULL,'R'},
@@ -314,7 +365,9 @@ double det2freq(unsigned long det){
 		return 0.0;
 	return sample_freq_d/(det*2);
 }
-#define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn-st);}
+int calc=0;
+double calc_input=0.0;
+#define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn);}
 int main(int argc,char **argv){
 	double st,lt,ct,x,ovf,sndbkn;
 	unsigned long t,det,let;
@@ -328,10 +381,12 @@ int main(int argc,char **argv){
 				"\t-o,--output filename\n"
 				"\t-q,--quiet[=time]\tdo not output message to screen\n"
 				"\t-b,--buffer[=size]\tcreate a buffer to write data,default size is PIPE_BUF(%zu)\n"
-				"\t-r,--raw output raw data to stdout or file\n"
+				"\t-r,--raw\toutput raw data to stdout or file\n"
 				"\t-h,--hot expression\thot function\n"
-				"\t-f,--ff-output output message of ffplay/ffmpeg to screen\n"
+				"\t-f,--ff-output\toutput message of ffplay/ffmpeg to screen\n"
+				"\t-C,--calc[=input]\tevaluate the expression only\n"
 #ifdef TEXT_ENABLED
+				"options for text:\n"
 				"\t-T,--text text\tgiven the in function text()\n"
 				"\t-R,--text-reverse\treverse the text\n"
 				"\t-M,--text-mirror\tmirror the text\n"
@@ -358,7 +413,7 @@ int main(int argc,char **argv){
 	signal(SIGPIPE,sig);
 	signal(SIGINT,sig);
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:f"
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::"
 #ifdef TEXT_ENABLED
 					"T:RMVI:L:F:A:"
 #endif
@@ -383,13 +438,6 @@ int main(int argc,char **argv){
 				break;
 			case 'b':
 				buffer_size=(optarg?atol2(optarg):PIPE_BUF);
-				if(!buffer_size)
-					break;
-				if(sizeof(ampl_type)>1)
-					buffer_size=(buffer_size+(sizeof(ampl_type)-1))&~(sizeof(ampl_type)-1);
-				buffer=xmalloc(buffer_size);
-				buffer_cur=buffer;
-				buffer_end=buffer+buffer_size/sizeof(ampl_type);
 				break;
 			case 'r':
 				raw=1;
@@ -406,6 +454,11 @@ int main(int argc,char **argv){
 			case 'f':
 				ff_output=1;
 				break;
+			case 'C':
+				if(optarg)
+					calc_input=atod2(optarg);
+				calc=1;
+				break;
 			case '?':
 				exit(EXIT_FAILURE);
 				break;
@@ -413,37 +466,37 @@ int main(int argc,char **argv){
 #define text_ok_check(_c) if(text_ok)errx(EXIT_FAILURE,"option -" _c " must be used before --text/-T")
 
 			case 'T':
-				text_scan(optarg);
-				text_ok=1;
+				text_scan(newdeft(),optarg);
+				//text_ok=1;
 				break;
 			case 'R':
-				text_ok_check("R");
-				reverse=1;
+				//text_ok_check("R");
+				reverse^=1;
 				break;
 			case 'M':
-				text_ok_check("M");
-				mirror=1;
+				//text_ok_check("M");
+				mirror^=1;
 				break;
 			case 'V':
-				text_ok_check("V");
-				vmirror=1;
+				//text_ok_check("V");
+				vmirror^=1;
 				break;
 			case 'I':
-				text_ok_check("I");
+				//text_ok_check("I");
 				tfinterval=atod2(optarg);
 				if(tfinterval<=0.0)
 					errx(EXIT_FAILURE,"\"%s\" is not a positive number.",optarg);
 				break;
 			case 'L':
-				text_ok_check("L");
+				//text_ok_check("L");
 				freq_lowest=atod2(optarg);
 				break;
 			case 'F':
-				text_ok_check("F");
+				//text_ok_check("F");
 				freq_functor=atod2(optarg);
 				break;
 			case 'A':
-				text_ok_check("A");
+				//text_ok_check("A");
 				ratio=(int32_t)atol2(optarg);
 				if(ratio<=0)
 					errx(EXIT_FAILURE,"\"%s\" is not a positive integer.",optarg);
@@ -458,10 +511,21 @@ break2:
 		setexpr(&ep,argv[optind]);
 	}else
 		errx(EXIT_FAILURE,"no or redefined expression");
+	if(calc){
+		fprintf(stdout,"%lg\n",expr_eval(ep,calc_input));
+		return 0;
+	}
 	if(raw)
 		outfd=(outfile?xopen(outfile):STDOUT_FILENO);
 	else
 		outfd=getpipe();
+	if(buffer_size){
+		if(sizeof(ampl_type)>1)
+			buffer_size=(buffer_size+(sizeof(ampl_type)-1))&~(sizeof(ampl_type)-1);
+		buffer=xmalloc(buffer_size);
+		buffer_cur=buffer;
+		buffer_end=buffer+buffer_size/sizeof(ampl_type);
+	}
 	st=dtime();
 	lt=st;
 	ct=st;
@@ -480,10 +544,10 @@ break2:
 		}
 		if(vf>1){
 			vf=1;
-			sndbkn=ct;
+			sndbkn=x;
 		}else if(vf<-1){
 			vf=-1;
-			sndbkn=ct;
+			sndbkn=x;
 		}
 		if(vf>ovf&&status){
 			det=t-let;
