@@ -6,10 +6,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <assert.h>
 #include "sbmp.h"
 struct sbmp *sbmp_compress(const struct sbmp *sp){
-	struct sbmp *nsp;
+	struct sbmp *nsp,*nsp2;
 	unsigned char *p;
 	uint64_t index,total,last;
 	unsigned char currentval;
@@ -51,8 +50,8 @@ struct sbmp *sbmp_compress(const struct sbmp *sp){
 	*(uint64_t *)p=0xccccccccccccccccul;
 	nsp->size=(p-nsp->data+sizeof(uint64_t));
 	nsp->compressed=1;
-	nsp=realloc(nsp,nsp->size+sizeof(struct sbmp));
-	return nsp;
+	nsp2=realloc(nsp,nsp->size+sizeof(struct sbmp));
+	return nsp2?nsp2:nsp;
 }
 int sbmp_decompress(const struct sbmp *sp,struct sbmp *out){
 	const unsigned char *p=sp->data,*end=sp->data+sp->size-sizeof(uint64_t);
