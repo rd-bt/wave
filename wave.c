@@ -675,6 +675,7 @@ break2:
 	outfd=-1;
 	if(!quiet)
 		out("\ndata is written, %.2lfs remaining\n",x-(ct-st));
-	waitpid(fpid,NULL,0);
+	if(waitpid(fpid,&status,0)>=0&&WIFEXITED(status)&&WEXITSTATUS(status)!=EXIT_SUCCESS)
+		errx(EXIT_FAILURE,"failed (status:%d)",WEXITSTATUS(status));
 	return EXIT_SUCCESS;
 }
