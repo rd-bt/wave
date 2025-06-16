@@ -15,8 +15,20 @@
 #include <signal.h>
 #include <limits.h>
 #include <getopt.h>
+#include <stdarg.h>
 #include "expr.h"
 struct expr_symset *es=NULL;
+void sdtime(double dsec){
+	struct timespec ts;
+	ts.tv_sec=(time_t)dsec;
+	ts.tv_nsec=(time_t)((dsec-(double)(ts.tv_sec))*1000000000);
+	clock_nanosleep(CLOCK_REALTIME,0,&ts,NULL);
+}
+double dtime(void){
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME,&ts);
+	return (double)ts.tv_sec+ts.tv_nsec/1000000000.0;
+}
 int xopen(const char *path){
 	int r;
 	r=open(path,O_WRONLY|O_CREAT,S_IRUSR|S_IWUSR);
@@ -220,10 +232,11 @@ int outfd=-1,raw=0;
 #endif
 ampl_type *buffer=NULL,*buffer_cur=NULL,*buffer_end=NULL;
 size_t buffer_size=PIPE_BUF;
+int unsafe=0;
 void setexpr(struct expr **p,const char *c){
 	int e;
 	char ei[EXPR_SYMLEN];
-	*p=new_expr(c,"t",es,&e,ei);
+	*p=new_expr6(c,"t",es,unsafe?0:EXPR_IF_PROTECT,&e,ei);
 	if(!*p)
 		errx(EXIT_FAILURE,"%s:%s",expr_error(e),ei);
 }
@@ -235,6 +248,8 @@ __attribute__((constructor)) void atstart(void){
 	if(!expr_symset_add(es,"y",EXPR_VARIABLE,&vf))
 		err(EXIT_FAILURE,"expr_symset_add");
 	if(!expr_symset_add(es,"sample",EXPR_VARIABLE,&sample_freq_d))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"time",EXPR_ZAFUNCTION,dtime))
 		err(EXIT_FAILURE,"expr_symset_add");
 #ifdef TEXT_ENABLED
 	text_init();
@@ -297,17 +312,6 @@ int getpipe(void){
 	close(pipefd[0]);
 	return pipefd[1];
 }
-void sdtime(double dsec){
-	struct timespec ts;
-	ts.tv_sec=(time_t)dsec;
-	ts.tv_nsec=(time_t)((dsec-(double)(ts.tv_sec))*1000000000);
-	clock_nanosleep(CLOCK_REALTIME,0,&ts,NULL);
-}
-double dtime(void){
-	struct timespec ts;
-	clock_gettime(CLOCK_REALTIME,&ts);
-	return (double)ts.tv_sec+ts.tv_nsec/1000000000.0;
-}
 double atod2(const char *str){
 	double r;
 	char *c;
@@ -348,6 +352,9 @@ const struct option ops[]={
 	{"hotsym",1,NULL,'H'},
 	{"ff-output",0,NULL,'f'},
 	{"calc",2,NULL,'C'},
+	{"unsafe",2,NULL,'u'},
+	{"list",2,NULL,'l'},
+	{"help",0,NULL,0x706c6568},
 #ifdef TEXT_ENABLED
 	{"text",1,NULL,'T'},
 	{"text-reverse",0,NULL,'R'},
@@ -365,6 +372,39 @@ double det2freq(unsigned long det){
 		return 0.0;
 	return sample_freq_d/(det*2);
 }
+int str2i(const char *in,...){
+	va_list ap;
+	const char *p;
+	int r;
+	va_start(ap,in);
+	while((p=va_arg(ap,const char *))){
+		r=va_arg(ap,int);
+		if(!strcmp(in,p))
+			goto end;
+	}
+	r=-1;
+end:
+	va_end(ap);
+	return r;
+}
+void showsym(int type,const char *extra){
+	char buf[32];
+	for(const struct expr_builtin_symbol *p=expr_symbols;;++p){
+		if(!p->str){
+			break;
+		}
+		if(p->type!=type)
+			continue;
+		snprintf(buf,32,"%s%s",p->str,extra);
+		buf[31]=0;
+		fprintf(stdout,"%-16s",buf);
+		if(p->flag&EXPR_SF_INJECTION)
+			fputs(" injection",stdout);
+		if(p->flag&EXPR_SF_UNSAFE)
+			fputs(" unsafe",stdout);
+		fputc('\n',stdout);
+	}
+}
 int calc=0;
 double calc_input=0.0;
 #define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn);}
@@ -374,6 +414,7 @@ int main(int argc,char **argv){
 	ampl_type ampl;
 	int status;
 	if(argc<2){
+show_help:
 		fprintf(stdout,"usage: %s [options] expression\n"
 				"\texpresion\tsuch as \"sin(4400*2*pi*t)\" which will generate a sine wave with a frequency of 4400Hz\n"
 				"\t-c,--cond expression\tcondition to stop\n"
@@ -385,6 +426,9 @@ int main(int argc,char **argv){
 				"\t-h,--hot expression\thot function\n"
 				"\t-f,--ff-output\toutput message of ffplay/ffmpeg to screen\n"
 				"\t-C,--calc[=input]\tevaluate the expression only\n"
+				"\t-u,--unsafe\tallow unsafe operations(e.g. explode())\n"
+				"\t-l,--list[=category]\tlist function,variable,etc\n"
+				"\t--help\tshow this help\n"
 #ifdef TEXT_ENABLED
 				"options for text:\n"
 				"\t-T,--text text\tgiven the in function text()\n"
@@ -413,7 +457,7 @@ int main(int argc,char **argv){
 	signal(SIGPIPE,sig);
 	signal(SIGINT,sig);
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::"
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::"
 #ifdef TEXT_ENABLED
 					"T:RMVI:L:F:A:"
 #endif
@@ -444,11 +488,11 @@ int main(int argc,char **argv){
 				break;
 			case 'h':
 				if(!expr_symset_add(es,hotsym,EXPR_HOTFUNCTION,optarg,"t"))
-					errx(EXIT_FAILURE,"cannot add hot function.");
+					errx(EXIT_FAILURE,"cannot add hot function");
 				break;
 			case 'H':
 				if(strlen(optarg)>=EXPR_SYMLEN)
-					errx(EXIT_FAILURE,"symbol of hot function is too long.");
+					errx(EXIT_FAILURE,"symbol of hot function is too long");
 				strcpy(hotsym,optarg);
 				break;
 			case 'f':
@@ -459,6 +503,48 @@ int main(int argc,char **argv){
 					calc_input=atod2(optarg);
 				calc=1;
 				break;
+			case 'u':
+				unsafe=1;
+				break;
+			case 0x706c6568:
+				goto show_help;
+			case 'l':
+				if(!optarg){
+					fprintf(stdout,"non-builtin function constant\n"
+						"function,constant only show the builtins.\n"
+						);
+				}else {
+					switch(status=str2i(optarg,"function",0,"constant",1,"non-builtin",2,NULL)){
+						case 0:
+							showsym(EXPR_FUNCTION,"(t)");
+							showsym(EXPR_ZAFUNCTION,"()");
+							showsym(EXPR_MDFUNCTION,"(...)");
+							showsym(EXPR_MDEPFUNCTION,"(***)");
+							break;
+						case 1:
+							showsym(EXPR_CONSTANT,"");
+							break;
+						case 2:
+							fprintf(stdout,
+			"function:\n"
+			"time()\treturn current unix stamp\n"
+#ifdef TEXT_ENABLED
+			"text(t)\tuse the function to generate sound of the given text in spectrum\n"
+			"text2(t,index)\tfor more than 1 texts,equivalent to text(t) when index=0\n"
+#endif
+			"variable:\n"
+			"sample\tsample rate\n"
+			"y\tcurrent value of expression\n"
+#ifdef TEXT_ENABLED
+			"text_end\ttext will vanish when t>=text_end\n"
+#endif
+									);
+							break;
+						default:
+							errx(EXIT_FAILURE,"invaild category: %s",optarg);
+					}
+				}
+				return EXIT_SUCCESS;
 			case '?':
 				exit(EXIT_FAILURE);
 				break;

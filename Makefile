@@ -20,5 +20,8 @@ text.o: texts/text.c
 leak: expr.c wave.c expr.h
 	$(CC) -DTEXT_ENABLED -Wall -Og -fsanitize=address -g wave.c expr.c -o wave $(LFLAG)
 .PHONY:
+notext: expr.o wave.c sbmp.o text.o
+	$(CC) -Wall -O3 wave.c expr.o -o wave -lm
+.PHONY:
 clean:
 	rm -f wave wave32 wave16 wave8 expr.o sbmp.o text.o

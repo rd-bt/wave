@@ -12,8 +12,6 @@
 #include <limits.h>
 #include <err.h>
 #include <setjmp.h>
-#define NDEBUG
-#include <assert.h>
 #define printval(x) fprintf(stderr,#x ":%lu\n",x)
 #define printvall(x) fprintf(stderr,#x ":%ld\n",x)
 #define printvald(x) fprintf(stderr,#x ":%lf\n",x)
@@ -1341,13 +1339,14 @@ static double expr_hypot(size_t n,double *args){
 #define REGFSYM(s) {.strlen=sizeof(#s)-1,.str=#s,.un={.func=s},.type=EXPR_FUNCTION,.flag=EXPR_SF_INJECTION}
 #define REGCSYM(s) {.strlen=sizeof(#s)-1,.str=#s,.un={.value=s},.type=EXPR_CONSTANT}
 #define REGFSYM2(s,sym) {.strlen=sizeof(s)-1,.str=s,.un={.func=sym},.type=EXPR_FUNCTION,.flag=EXPR_SF_INJECTION}
-#define REGFSYM2_NI(s,sym) {.strlen=sizeof(s)-1,.str=s,.un={.func=sym},.type=EXPR_FUNCTION,.flag=0}
+#define REGFSYM2_NI(s,sym) {.strlen=sizeof(s)-1,.str=s,.un={.func=sym},.type=EXPR_FUNCTION,.flag=EXPR_SF_UNSAFE}
 #define REGZASYM2(s,sym) {.strlen=sizeof(s)-1,.str=s,.un={.zafunc=sym},.type=EXPR_ZAFUNCTION,.flag=0}
+#define REGZASYM2_U(s,sym) {.strlen=sizeof(s)-1,.str=s,.un={.zafunc=sym},.type=EXPR_ZAFUNCTION,.flag=EXPR_SF_UNSAFE}
 #define REGMDSYM2(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdfunc=sym},.dim=d,.type=EXPR_MDFUNCTION,.flag=EXPR_SF_INJECTION}
-#define REGMDSYM2_NI(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdfunc=sym},.dim=d,.type=EXPR_MDFUNCTION,.flag=0}
+//#define REGMDSYM2_NI(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdfunc=sym},.dim=d,.type=EXPR_MDFUNCTION,.flag=0}
 #define REGMDEPSYM2(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdepfunc=sym},.dim=d,.type=EXPR_MDEPFUNCTION,.flag=EXPR_SF_INJECTION}
-#define REGMDEPSYM2_NI(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdepfunc=sym},.dim=d,.type=EXPR_MDEPFUNCTION,.flag=0}
-#define REGMDEPSYM2_NIW(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdepfunc=sym},.dim=d,.type=EXPR_MDEPFUNCTION,.flag=EXPR_SF_WRITEIP}
+#define REGMDEPSYM2_NI(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdepfunc=sym},.dim=d,.type=EXPR_MDEPFUNCTION,.flag=EXPR_SF_UNSAFE}
+#define REGMDEPSYM2_NIW(s,sym,d) {.strlen=sizeof(s)-1,.str=s,.un={.mdepfunc=sym},.dim=d,.type=EXPR_MDEPFUNCTION,.flag=EXPR_SF_WRITEIP|EXPR_SF_UNSAFE}
 #define REGCSYM2(s,val) {.strlen=sizeof(s)-1,.str=s,.un={.value=val},.type=EXPR_CONSTANT}
 #define REGKEY(s,op,dim,desc) {s,op,0,sizeof(s)-1,desc}
 #define REGKEYS(s,op,dim,desc) {s,op,EXPR_KF_SUBEXPR,sizeof(s)-1,desc}
@@ -1401,6 +1400,7 @@ const struct expr_builtin_symbol expr_symbols[]={
 	REGCSYM(EXPR_SF_PMD),
 	REGCSYM(EXPR_SF_PME),
 	REGCSYM(EXPR_SF_PEP),
+	REGCSYM(EXPR_SF_UNSAFE),
 	REGCSYM(FLT_MAX),
 	REGCSYM(FLT_MIN),
 	REGCSYM(FLT_EPSILON),
@@ -1414,28 +1414,30 @@ const struct expr_builtin_symbol expr_symbols[]={
 	REGCSYM2("2_pi",M_2_PI),
 	REGCSYM2("2_sqrtpi",M_2_SQRTPI),
 	REGCSYM2("C",0.577215664901532860606512090082402431042),
-	REGCSYM2("c",299792458.0),
 	REGCSYM2("e",M_E),
-	REGCSYM2("e0",8.8541878128e-12),
-	REGCSYM2("e1",1.602176634e-19),
-	REGCSYM2("G",6.67430e-11),
-	REGCSYM2("h",6.62607015e-34),
 	REGCSYM2("inf",INFINITY),
-	REGCSYM2("k",1.380649e-23),
 	REGCSYM2("log2e",M_LOG2E),
 	REGCSYM2("log10e",M_LOG10E),
 	REGCSYM2("ln2",M_LN2),
 	REGCSYM2("ln10",M_LN10),
-	REGCSYM2("N_A",6.02214076e+23),
 	REGCSYM2("nan",NAN),
 	REGCSYM2("pi",M_PI),
 	REGCSYM2("pi_2",M_PI_2),
 	REGCSYM2("pi_4",M_PI_4),
-	REGCSYM2("R",8.31446261815234),
 	REGCSYM2("sqrt2",M_SQRT2),
 	REGCSYM2("sqrt1_2",M_SQRT1_2),
+#ifdef PHYSICAL_CONSTANT
+	REGCSYM2("c",299792458.0),
+	REGCSYM2("e0",8.8541878128e-12),
+	REGCSYM2("e1",1.602176634e-19),
+	REGCSYM2("G",6.67430e-11),
+	REGCSYM2("h",6.62607015e-34),
+	REGCSYM2("k",1.380649e-23),
+	REGCSYM2("N_A",6.02214076e+23),
+	REGCSYM2("R",8.31446261815234),
 	REGCSYM2("sqrc",89875517873681764.0),
 	REGCSYM2("u0",1.25663706212e-6),
+#endif
 
 	REGFSYM2("abs",fabs),
 	REGFSYM(acos),
@@ -1500,12 +1502,12 @@ const struct expr_builtin_symbol expr_symbols[]={
 	REGFSYM(y0),
 	REGFSYM(y1),
 
-	REGZASYM2("abort",(double (*)(void))abort),
+	REGZASYM2_U("abort",(double (*)(void))abort),
 	REGZASYM(drand48),
-	REGZASYM2("frame",expr_frame),
+	REGZASYM2_U("frame",expr_frame),
 	REGZASYM2("lrand48",expr_lrand48),
 	REGZASYM2("mrand48",expr_mrand48),
-	REGZASYM2("explode",(double (*)(void))expr_explode),
+	REGZASYM2_U("explode",(double (*)(void))expr_explode),
 
 	REGFSYM2_NI("exit",expr_exit),
 	REGFSYM2_NI("exitif",expr_exitif),
@@ -2843,11 +2845,10 @@ ecta:
 				case EXPR_MDFUNCTION:
 				case EXPR_MDEPFUNCTION:
 				case EXPR_ZAFUNCTION:
-					if(!(flag&EXPR_SF_INJECTION)){
-						if((ep->iflag&EXPR_IF_INJECTION_S)){
-							goto symerr;
-						}
-					}
+					if(!(flag&EXPR_SF_INJECTION)&&(ep->iflag&EXPR_IF_INJECTION_S))
+						goto symerr;
+					if((flag&EXPR_SF_UNSAFE)&&(ep->iflag&EXPR_IF_PROTECT))
+						goto pm;
 				default:
 					break;
 			}
@@ -2862,11 +2863,10 @@ ecta:
 			case EXPR_MDFUNCTION:
 			case EXPR_MDEPFUNCTION:
 			case EXPR_ZAFUNCTION:
-				if(!(flag&EXPR_SF_INJECTION)){
-					if((ep->iflag&EXPR_IF_INJECTION)){
-						goto symerr;
-					}
-				}
+				if(!(flag&EXPR_SF_INJECTION)&&(ep->iflag&EXPR_IF_INJECTION))
+					goto symerr;
+				if((flag&EXPR_SF_UNSAFE)&&(ep->iflag&EXPR_IF_PROTECT))
+					goto pm;
 			default:
 				break;
 		}
@@ -3350,6 +3350,10 @@ number:
 		ep->error=EXPR_ENUMBER;
 		return NULL;
 	}*/
+pm:
+	serrinfo(ep->errinfo,e,p-e);
+	ep->error=EXPR_EPM;
+	return NULL;
 symerr:
 	serrinfo(ep->errinfo,e,p-e);
 	ep->error=EXPR_ESYMBOL;
