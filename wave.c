@@ -353,6 +353,7 @@ const struct option ops[]={
 	{"ff-output",0,NULL,'f'},
 	{"calc",2,NULL,'C'},
 	{"unsafe",2,NULL,'u'},
+	{"no-catch-SIGINT",0,NULL,'i'},
 	{"list",2,NULL,'l'},
 	{"help",0,NULL,0x706c6568},
 #ifdef TEXT_ENABLED
@@ -405,7 +406,7 @@ void showsym(int type,const char *extra){
 		fputc('\n',stdout);
 	}
 }
-int calc=0;
+int calc=0,noint=0;
 double calc_input=0.0;
 #define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn);}
 int main(int argc,char **argv){
@@ -426,7 +427,8 @@ show_help:
 				"\t-h,--hot expression\thot function\n"
 				"\t-f,--ff-output\toutput message of ffplay/ffmpeg to screen\n"
 				"\t-C,--calc[=input]\tevaluate the expression only\n"
-				"\t-u,--unsafe\tallow unsafe operations(e.g. explode())\n"
+				"\t-u,--unsafe\tallow unsafe operations(e.g. explode() and direct memory access [] which may cause SIGSEGV)\n"
+				"\t-i,--no-catch-SIGINT\tdo not catch SIGINT\n"
 				"\t-l,--list[=category]\tlist function,variable,etc\n"
 				"\t--help\tshow this help\n"
 #ifdef TEXT_ENABLED
@@ -454,10 +456,8 @@ show_help:
 		return EXIT_SUCCESS;
 	}
 	opterr=1;
-	signal(SIGPIPE,sig);
-	signal(SIGINT,sig);
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::"
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::i"
 #ifdef TEXT_ENABLED
 					"T:RMVI:L:F:A:"
 #endif
@@ -505,6 +505,9 @@ show_help:
 				break;
 			case 'u':
 				unsafe=1;
+				break;
+			case 'i':
+				noint=1;
 				break;
 			case 0x706c6568:
 				goto show_help;
@@ -599,7 +602,7 @@ break2:
 		errx(EXIT_FAILURE,"no or redefined expression");
 	if(calc){
 		fprintf(stdout,"%lg\n",expr_eval(ep,calc_input));
-		return 0;
+		return EXIT_SUCCESS;
 	}
 	if(raw)
 		outfd=(outfile?xopen(outfile):STDOUT_FILENO);
@@ -612,6 +615,9 @@ break2:
 		buffer_cur=buffer;
 		buffer_end=buffer+buffer_size/sizeof(ampl_type);
 	}
+	signal(SIGPIPE,sig);
+	if(!noint)
+		signal(SIGINT,sig);
 	st=dtime();
 	lt=st;
 	ct=st;

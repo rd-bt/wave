@@ -714,10 +714,17 @@ __attribute__((noreturn)) void expr_explode(void){
 	do {
 		while((r=xmalloc_nullable(sz))){
 			expr_contract(r,sz);
+			//if do not contract,
+			//the virtual memory
+			//has not physical
+			//memory and the OOM
+			//will not be called.
 		}
 		sz>>=1ul;
 	}while(sz);
 	abort();
+//the abort() is usually unreachable,should
+//be killed by kernel before sz reaches 0
 }
 static double expr_lrand48(void){
 	return (double)lrand48();
