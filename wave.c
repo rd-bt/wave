@@ -103,7 +103,7 @@ int reverse=0,mirror=0,vmirror=0;
 double text_end=0.0;
 double tfinterval=0.00390625;
 int32_t ratio=128;
-double freq_lowest=440,freq_functor=4;
+double freq_lowest=512,freq_functor=4;
 void text_scan(struct text *t,const char *p){
 	const char *p1;
 	double e;
