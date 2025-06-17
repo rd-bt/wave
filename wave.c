@@ -66,7 +66,7 @@ struct text {
 	double tfinterval;
 	double freq_lowest,freq_functor;
 	int mirror,vmirror;
-	int32_t ratio,unused;
+	int32_t ratio,tinterval;
 } **defts=NULL;
 size_t dcount=0;
 char dbuf[TEXT_MAXOSIZE];
@@ -102,7 +102,7 @@ int reverse=0,mirror=0,vmirror=0;
 //int text_ok=0;
 double text_end=0.0;
 double tfinterval=0.00390625;
-int32_t ratio=128;
+int32_t ratio=128,tinterval=24;
 double freq_lowest=512,freq_functor=4;
 void text_scan(struct text *t,const char *p){
 	const char *p1;
@@ -126,31 +126,36 @@ void text_scan(struct text *t,const char *p){
 		text_end=e;
 }
 double ftext2(const struct text *restrict tp,double t0){
-	unsigned long t,n;
+	unsigned long n;
 	struct sbmp *sp;
 	double sum;
-	int32_t h,w,dy;
-	if(!tp->sbuf){
+	int64_t u,t;
+	int32_t dy,w,h;
+	if(!tp->sbuf)
 		return 0.0;
-	}
 	t=floor(t0/tp->tfinterval);
+	if(t<0)
+		return 0.0;
 	n=0;
 next:
 	sp=tp->sbuf[n];
 	w=sp->width;
-	if(t>=w){
+	u=w+tp->tinterval;
+	if(t>=u){
 		++n;
 		if(n<tp->scount){
-			t-=w;
+			t-=u;
 			goto next;
 		}
 		return 0.0;
 	}
+	if(t>=w)
+		return 0.0;
 	if(tp->mirror)
 		t=w-t-1;
 	h=sp->height;
 	sum=0.0;
-	dy=(h+tp->ratio-1)/tp->ratio;
+	dy=((int64_t)h+(int64_t)tp->ratio-1)/tp->ratio;
 	for(int32_t y=h-1;y>=0;y-=dy){
 		if(!sbmp_tstpixel(sp,t,y))
 			continue;
@@ -177,6 +182,7 @@ void tattr_init(struct text *t){
 	setfield(mirror);
 	setfield(vmirror);
 	setfield(ratio);
+	setfield(tinterval);
 }
 struct text *newdeft(void){
 	struct text *r=xmalloc(sizeof(struct text));
@@ -370,6 +376,7 @@ const struct option ops[]={
 	{"text-freq-lowest",1,NULL,'L'},
 	{"text-freq-functor",1,NULL,'F'},
 	{"text-ratio",1,NULL,'A'},
+	{"text-interval",1,NULL,'D'},
 #endif
 	{NULL}
 };
@@ -446,6 +453,7 @@ show_help:
 				"\t-L,--text-freq-lowest freq (default=%lg)\n"
 				"\t-F,--text-freq-functor functor (default=%lg)\n"
 				"\t-A,--text-ratio ratio (default=%d)\n"
+				"\t-D,--text-interval pixel (default=%d)\n"
 #endif
 #ifdef TEXT_ENABLED
 				"text height: %d\n"
@@ -455,7 +463,7 @@ show_help:
 				"compiled on " __DATE__ " "  __TIME__ "\n"
 				,argv[0],sample_freq,(size_t)PIPE_BUF
 #ifdef TEXT_ENABLED
-				,tfinterval,freq_lowest,freq_functor,ratio,(int32_t)TEXT_HEIGHT
+				,tfinterval,freq_lowest,freq_functor,ratio,tinterval,(int32_t)TEXT_HEIGHT
 #endif
 				);
 		return EXIT_SUCCESS;
@@ -464,7 +472,7 @@ show_help:
 	for(;;){
 		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::i"
 #ifdef TEXT_ENABLED
-					"T:RMVI:L:F:A:"
+					"T:RMVI:L:F:A:D:"
 #endif
 					,ops,NULL)){
 			case 'c':
@@ -594,6 +602,12 @@ show_help:
 				ratio=(int32_t)atol2(optarg);
 				if(ratio<=0)
 					errx(EXIT_FAILURE,"\"%s\" is not a positive integer.",optarg);
+				break;
+			case 'D':
+				//text_ok_check("D");
+				tinterval=(int32_t)atol2(optarg);
+				if(tinterval<0)
+					errx(EXIT_FAILURE,"\"%s\" is not a non-negative integer.",optarg);
 				break;
 #endif
 			case -1:
