@@ -101,9 +101,9 @@ void sbmp2f(struct text *t,int c){
 int reverse=0,mirror=0,vmirror=0;
 //int text_ok=0;
 double text_end=0.0;
-double tfinterval=0.0078125;
+double tfinterval=0.00390625;
 int32_t ratio=128;
-double freq_lowest=512,freq_functor=8;
+double freq_lowest=440,freq_functor=4;
 void text_scan(struct text *t,const char *p){
 	const char *p1;
 	double e;
@@ -314,10 +314,15 @@ int getpipe(void){
 }
 double atod2(const char *str){
 	double r;
-	char *c;
+	/*char *c;
 	r=strtod(str,&c);
 	if(c==str||*c)
-		errx(EXIT_FAILURE,"invaild double %s",str);
+		errx(EXIT_FAILURE,"invaild double %s",str);*/
+	int error=0;
+	char err[EXPR_SYMLEN];
+	r=expr_calc5(str,&error,err,NULL,EXPR_IF_PROTECT|EXPR_IF_NOKEYWORD);
+	if(error)
+		errx(EXIT_FAILURE,"invaild expression: %s (%s:%s)",str,expr_error(error),err);
 	return r;
 }
 long atol2(const char *str){
@@ -325,7 +330,7 @@ long atol2(const char *str){
 	char *c;
 	r=strtol(str,&c,10);
 	if(c==str||*c)
-		errx(EXIT_FAILURE,"invaild integer %s",str);
+		errx(EXIT_FAILURE,"invaild integer: %s",str);
 	return r;
 }
 sig_atomic_t sat=0;
