@@ -126,16 +126,14 @@ void text_scan(struct text *t,const char *p){
 		text_end=e;
 }
 double ftext2(const struct text *restrict tp,double t0){
-	unsigned long n;
+	unsigned long n,t;
 	struct sbmp *sp;
 	double sum;
-	int64_t u,t;
+	int64_t u;
 	int32_t dy,w,h;
 	if(!tp->sbuf)
 		return 0.0;
 	t=floor(t0/tp->tfinterval);
-	if(t<0)
-		return 0.0;
 	n=0;
 next:
 	sp=tp->sbuf[n];
@@ -191,12 +189,45 @@ struct text *newdeft(void){
 	defts[dcount-1]=r;
 	return r;
 }
+extern unsigned long sample_freq;
+static double supt(size_t n,const struct expr *args,double input){
+	double r=-INFINITY,x;
+	for(unsigned long t=0;;++t){
+		x=(double)t/sample_freq;
+		if(x>=text_end)
+			break;
+		if((x=expr_eval(args,x))>r)
+			r=x;
+	}
+	return r;
+}
+static double inft(size_t n,const struct expr *args,double input){
+	double r=+INFINITY,x;
+	for(unsigned long t=0;;++t){
+		x=(double)t/sample_freq;
+		if(x>=text_end)
+			break;
+		if((x=expr_eval(args,x))<r)
+			r=x;
+	}
+	return r;
+}
+static double correct(size_t n,double *args){
+	double l=args[1],u=args[2];
+	return 2.0*(*args-l)/(u-l)-1;
+}
 void text_init(){
 	if(!expr_symset_add(es,"text",EXPR_FUNCTION,ftext))
 		err(EXIT_FAILURE,"expr_symset_add");
 	if(!expr_symset_add(es,"text2",EXPR_MDFUNCTION,ftext2_md,(size_t)2))
 		err(EXIT_FAILURE,"expr_symset_add");
 	if(!expr_symset_add(es,"text_end",EXPR_VARIABLE,&text_end))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"supt",EXPR_MDEPFUNCTION,supt,(size_t)1))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"inft",EXPR_MDEPFUNCTION,inft,(size_t)1))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"correct",EXPR_MDFUNCTION,correct,(size_t)3))
 		err(EXIT_FAILURE,"expr_symset_add");
 }
 #endif
@@ -418,6 +449,19 @@ void showsym(int type,const char *extra){
 		fputc('\n',stdout);
 	}
 }
+void printdouble(double x){
+	char *buf,*p;
+	if(asprintf(&buf,"%.1024lf",x)<0)
+		err(EXIT_FAILURE,"asprintf");
+	p=strchr(buf,'.');
+	if(p){
+		p+=strlen(p);
+		while(*(--p)=='0')*p=0;
+		if(*p=='.')*p=0;
+	}
+	fprintf(stdout,"%s\n",buf);
+	free(buf);
+}
 int calc=0,noint=0;
 double calc_input=0.0;
 #define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn);}
@@ -547,6 +591,9 @@ show_help:
 #ifdef TEXT_ENABLED
 			"text(t)\tuse the function to generate sound of the given text in spectrum\n"
 			"text2(t,index)\tfor more than 1 texts,equivalent to text(t) when index=0\n"
+			"supt(f(t))\tfind max value of f(t) for 0<t<text_end\n"
+			"inft(f(t))\tfind min value of f(t) for 0<t<text_end\n"
+			"correct(t,a,b)\tmap [a,b] to [-1,1] linearly(may exceed for the deviation of float)\n"
 #endif
 			"variable:\n"
 			"sample\tsample rate\n"
@@ -620,7 +667,7 @@ break2:
 	}else
 		errx(EXIT_FAILURE,"no or redefined expression");
 	if(calc){
-		fprintf(stdout,"%lg\n",expr_eval(ep,calc_input));
+		printdouble(expr_eval(ep,calc_input));
 		return EXIT_SUCCESS;
 	}
 	if(raw)
