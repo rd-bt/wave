@@ -47,14 +47,6 @@ void *xmalloc(size_t size){
 	}
 	return r;
 }
-static void *xrealloc(void *old,size_t size){
-	void *r;
-	r=old?realloc(old,size):malloc(size);
-	if(!r){
-		err(EXIT_FAILURE,"realloc");
-	}
-	return r;
-}
 ssize_t readall(int fd,void *bufp){
 	char *buf,*p;
 	size_t bufsiz,r1;
@@ -138,6 +130,14 @@ double bmfunc(double t0){
 }
 //#define TEXT_ENABLED
 #ifdef TEXT_ENABLED
+static void *xrealloc(void *old,size_t size){
+	void *r;
+	r=old?realloc(old,size):malloc(size);
+	if(!r){
+		err(EXIT_FAILURE,"realloc");
+	}
+	return r;
+}
 #include "texts/text.h"
 struct text {
 	struct sbmp **sbuf;
@@ -716,7 +716,6 @@ show_help:
 			"function:\n"
 			"time()\treturn current unix stamp\n"
 			"bm(t)\tuse the function to generate sound of the given bitmap in spectrum\n"
-			"bm_end\tbitmap will vanish when t>=text_end\n"
 #ifdef TEXT_ENABLED
 			"text(t)\tuse the function to generate sound of the given text in spectrum\n"
 			"text2(t,index)\tfor more than 1 texts,equivalent to text(t) when index=0\n"
@@ -727,6 +726,7 @@ show_help:
 			"variable:\n"
 			"sample\tsample rate\n"
 			"y\tcurrent value of expression\n"
+			"bm_end\tbitmap will vanish when t>=text_end\n"
 #ifdef TEXT_ENABLED
 			"text_end\ttext will vanish when t>=text_end\n"
 #endif
