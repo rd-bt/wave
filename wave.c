@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <err.h>
+#include <errno.h>
 #include <time.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
@@ -16,6 +17,7 @@
 #include <limits.h>
 #include <getopt.h>
 #include <stdarg.h>
+#include "bitmap.h"
 #include "expr.h"
 struct expr_symset *es=NULL;
 void sdtime(double dsec){
@@ -45,11 +47,6 @@ void *xmalloc(size_t size){
 	}
 	return r;
 }
-int ff_output=0,quiet=0;
-#define out(fmt,...) ((ff_output||quiet)?0:fprintf(stderr,(fmt),__VA_ARGS__))
-#define outc(c) ((ff_output||quiet)?0:fputc((c),stderr))
-//#define TEXT_ENABLED
-#ifdef TEXT_ENABLED
 static void *xrealloc(void *old,size_t size){
 	void *r;
 	r=old?realloc(old,size):malloc(size);
@@ -58,6 +55,89 @@ static void *xrealloc(void *old,size_t size){
 	}
 	return r;
 }
+ssize_t readall(int fd,void *bufp){
+	char *buf,*p;
+	size_t bufsiz,r1;
+	ssize_t r,ret=0;
+	static const size_t ra_bufsize=4096;
+	int i;
+	bufsiz=ra_bufsize;
+	if((buf=malloc(ra_bufsize))==NULL)return -errno;
+	r1=0;
+	while((r=read(fd,buf+ret,ra_bufsize-r1))>0){
+		r1+=r;
+		ret+=r;
+		if(ret==bufsiz){
+			bufsiz+=ra_bufsize;
+			if((p=realloc(buf,bufsiz))==NULL){
+				i=errno;
+				free(buf);
+				return -i;
+			}
+			buf=p;
+			r1=0;
+		}
+	}
+	if(ret==bufsiz){
+	if((p=realloc(buf,bufsiz+1))==NULL){
+		i=errno;
+		free(buf);
+		return -i;
+	}
+	buf=p;
+	}
+	buf[ret]=0;
+	*(void **)bufp=buf;
+	return ret;
+}
+int ff_output=0,quiet=0;
+#define out(fmt,...) ((ff_output||quiet)?0:fprintf(stderr,(fmt),__VA_ARGS__))
+#define outc(c) ((ff_output||quiet)?0:fputc((c),stderr))
+struct bitmap *bm=NULL;
+double bm_end=0.0;
+double bminterval=0.01;
+void bmload(const char *path){
+	ssize_t r;
+	int fd=open(path,O_RDONLY);
+	if(fd<0)
+		err(EXIT_FAILURE,"open");
+	r=readall(fd,&bm);
+	close(fd);
+	if(r<0)
+		err(EXIT_FAILURE,"readall");
+	fd=bm_check(bm,r);
+	if(fd<0)
+		errx(EXIT_FAILURE,"invaild bitmap (%d)",fd);
+	bm_end=(bm->width+1)*bminterval;
+}
+int32_t bmratio=128;
+int bmmirror=0,bmvmirror=0;
+double bm_freq_lowest=512,bm_freq_functor=8;
+double bmfunc(double t0){
+	unsigned long t;
+	double sum;
+	int32_t dy,w,h,x;
+	if(!bm)
+		return 0.0;
+	t=floor(t0/bminterval);
+	w=bm->width;
+	if(t>=w)
+		return 0.0;
+	if(bmmirror)
+		t=w-t-1;
+	h=bm->height;
+	sum=0.0;
+	dy=((int64_t)h+(int64_t)bmratio-1)/bmratio;
+	for(int32_t y=h-1;y>=0;y-=dy){
+		x=bm_getpixel(bm,t,y);
+		x=((x&0x0000ff)+((x&0x00ff00)>>8)+((x&0xff0000)>>16));
+		sum+=(x/765.0)*sin((2*M_PI)*((bmvmirror?h-y-1:y)*bm_freq_functor+bm_freq_lowest)*t0);
+	}
+	sum/=bmratio;
+	return sum;
+}
+//#define TEXT_ENABLED
+#ifdef TEXT_ENABLED
 #include "texts/text.h"
 struct text {
 	struct sbmp **sbuf;
@@ -288,6 +368,10 @@ __attribute__((constructor)) void atstart(void){
 		err(EXIT_FAILURE,"expr_symset_add");
 	if(!expr_symset_add(es,"time",EXPR_ZAFUNCTION,dtime))
 		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"bm",EXPR_FUNCTION,bmfunc))
+		err(EXIT_FAILURE,"expr_symset_add");
+	if(!expr_symset_add(es,"bm_end",EXPR_VARIABLE,&bm_end))
+		err(EXIT_FAILURE,"expr_symset_add");
 #ifdef TEXT_ENABLED
 	text_init();
 #endif
@@ -302,6 +386,8 @@ __attribute__((destructor)) void atend(void){
 		close(outfd);
 	if(buffer)
 		free(buffer);
+	if(bm)
+		free(bm);
 #ifdef TEXT_ENABLED
 	sfreeall();
 #endif
@@ -383,34 +469,6 @@ void sig(int s){
 			break;
 	}
 }
-const struct option ops[]={
-	{"cond",1,NULL,'c'},
-	{"sample",1,NULL,'s'},
-	{"output",1,NULL,'o'},
-	{"quiet",2,NULL,'q'},
-	{"buffer",2,NULL,'b'},
-	{"raw",0,NULL,'r'},
-	{"hot",1,NULL,'h'},
-	{"hotsym",1,NULL,'H'},
-	{"ff-output",0,NULL,'f'},
-	{"calc",2,NULL,'C'},
-	{"unsafe",2,NULL,'u'},
-	{"no-catch-SIGINT",0,NULL,'i'},
-	{"list",2,NULL,'l'},
-	{"help",0,NULL,0x706c6568},
-#ifdef TEXT_ENABLED
-	{"text",1,NULL,'T'},
-	{"text-reverse",0,NULL,'R'},
-	{"text-mirror",0,NULL,'M'},
-	{"text-vmirror",0,NULL,'V'},
-	{"text-freq-interval",1,NULL,'I'},
-	{"text-freq-lowest",1,NULL,'L'},
-	{"text-freq-functor",1,NULL,'F'},
-	{"text-ratio",1,NULL,'A'},
-	{"text-interval",1,NULL,'D'},
-#endif
-	{NULL}
-};
 double det2freq(unsigned long det){
 	if(!det)
 		return 0.0;
@@ -464,6 +522,41 @@ void printdouble(double x){
 }
 int calc=0,noint=0;
 double calc_input=0.0;
+const struct option ops[]={
+	{"cond",1,NULL,'c'},
+	{"sample",1,NULL,'s'},
+	{"output",1,NULL,'o'},
+	{"quiet",2,NULL,'q'},
+	{"buffer",2,NULL,'b'},
+	{"raw",0,NULL,'r'},
+	{"hot",1,NULL,'h'},
+	{"hotsym",1,NULL,'H'},
+	{"ff-output",0,NULL,'f'},
+	{"calc",2,NULL,'C'},
+	{"unsafe",2,NULL,'u'},
+	{"no-catch-SIGINT",0,NULL,'i'},
+	{"list",2,NULL,'l'},
+	{"help",0,NULL,0x706c6568},
+	{"in",1,NULL,0x6e69},
+	{"mirror",0,NULL,'m'},
+	{"vmirror",0,NULL,'v'},
+	{"freq-interval",1,NULL,'n'},
+	{"freq-lowest",1,NULL,'w'},
+	{"freq-functor",1,NULL,'t'},
+	{"ratio",1,NULL,'a'},
+#ifdef TEXT_ENABLED
+	{"text",1,NULL,'T'},
+	{"text-reverse",0,NULL,'R'},
+	{"text-mirror",0,NULL,'M'},
+	{"text-vmirror",0,NULL,'V'},
+	{"text-freq-interval",1,NULL,'I'},
+	{"text-freq-lowest",1,NULL,'L'},
+	{"text-freq-functor",1,NULL,'F'},
+	{"text-ratio",1,NULL,'A'},
+	{"text-interval",1,NULL,'D'},
+#endif
+	{NULL}
+};
 #define show(a,b) {if(sndbkn<0.0)out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)\0338",a,b,det2freq(det));else out("\033[K\0337%.2lfs cost|%.2lfs written|freq=%.2lf (inaccurate)|sound broken(%.2lfs)\0338",a,b,det2freq(det),sndbkn);}
 int main(int argc,char **argv){
 	double st,lt,ct,x,ovf,sndbkn;
@@ -487,12 +580,20 @@ show_help:
 				"\t-i,--no-catch-SIGINT\tdo not catch SIGINT\n"
 				"\t-l,--list[=category]\tlist function,variable,etc\n"
 				"\t--help\tshow this help\n"
+				"options for bitmap:\n"
+				"\t--in\tinput a bitmap to function bm()\n"
+				"\t-m,--freq-mirror\tmirror the text\n"
+				"\t-v,--freq-vmirror\tmirror the text vertically\n"
+				"\t-n,--freq-interval time (default=%lg)\n"
+				"\t-w,--freq-lowest freq (default=%lg)\n"
+				"\t-t,--freq-functor (default=%lg)\n"
+				"\t-a,--ratio ratio (default=%d)\n"
 #ifdef TEXT_ENABLED
 				"options for text:\n"
 				"\t-T,--text text\tgiven the in function text()\n"
 				"\t-R,--text-reverse\treverse the text\n"
 				"\t-M,--text-mirror\tmirror the text\n"
-				"\t-V,--text-vmirror\treverse the text vertically\n"
+				"\t-V,--text-vmirror\tmirror the text vertically\n"
 				"\t-I,--text-freq-interval time (default=%lg)\n"
 				"\t-L,--text-freq-lowest freq (default=%lg)\n"
 				"\t-F,--text-freq-functor functor (default=%lg)\n"
@@ -505,7 +606,7 @@ show_help:
 				"format: " ampl_fmt "\n"
 				"ffplay/ffmpeg is required in playing/file-output mode.\n"
 				"compiled on " __DATE__ " "  __TIME__ "\n"
-				,argv[0],sample_freq,(size_t)PIPE_BUF
+				,argv[0],sample_freq,(size_t)PIPE_BUF,bminterval,bm_freq_lowest,bm_freq_functor,bmratio
 #ifdef TEXT_ENABLED
 				,tfinterval,freq_lowest,freq_functor,ratio,tinterval,(int32_t)TEXT_HEIGHT
 #endif
@@ -514,7 +615,7 @@ show_help:
 	}
 	opterr=1;
 	for(;;){
-		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::i"
+		switch(getopt_long(argc,argv,"c:s:o:q::b::rh:H:fC::ul::imvn:w:t:a:"
 #ifdef TEXT_ENABLED
 					"T:RMVI:L:F:A:D:"
 #endif
@@ -568,6 +669,32 @@ show_help:
 				break;
 			case 0x706c6568:
 				goto show_help;
+			case 0x6e69:
+				if(!bm)
+					bmload(optarg);
+				break;
+			case 'm':
+				bmmirror^=1;
+				break;
+			case 'v':
+				bmvmirror^=1;
+				break;
+			case 'n':
+				bminterval=atod2(optarg);
+				if(bminterval<=0.0)
+					errx(EXIT_FAILURE,"\"%s\" is not a positive number.",optarg);
+				break;
+			case 'w':
+				bm_freq_lowest=atod2(optarg);
+				break;
+			case 't':
+				bm_freq_functor=atod2(optarg);
+				break;
+			case 'a':
+				bmratio=(int32_t)atol2(optarg);
+				if(bmratio<=0)
+					errx(EXIT_FAILURE,"\"%s\" is not a positive integer.",optarg);
+				break;
 			case 'l':
 				if(!optarg){
 					fprintf(stdout,"non-builtin function constant\n"
@@ -588,6 +715,8 @@ show_help:
 							fprintf(stdout,
 			"function:\n"
 			"time()\treturn current unix stamp\n"
+			"bm(t)\tuse the function to generate sound of the given bitmap in spectrum\n"
+			"bm_end\tbitmap will vanish when t>=text_end\n"
 #ifdef TEXT_ENABLED
 			"text(t)\tuse the function to generate sound of the given text in spectrum\n"
 			"text2(t,index)\tfor more than 1 texts,equivalent to text(t) when index=0\n"
@@ -612,46 +741,37 @@ show_help:
 				exit(EXIT_FAILURE);
 				break;
 #ifdef TEXT_ENABLED
-#define text_ok_check(_c) if(text_ok)errx(EXIT_FAILURE,"option -" _c " must be used before --text/-T")
+//#define text_ok_check(_c) if(text_ok)errx(EXIT_FAILURE,"option -" _c " must be used before --text/-T")
 
 			case 'T':
 				text_scan(newdeft(),optarg);
-				//text_ok=1;
 				break;
 			case 'R':
-				//text_ok_check("R");
 				reverse^=1;
 				break;
 			case 'M':
-				//text_ok_check("M");
 				mirror^=1;
 				break;
 			case 'V':
-				//text_ok_check("V");
 				vmirror^=1;
 				break;
 			case 'I':
-				//text_ok_check("I");
 				tfinterval=atod2(optarg);
 				if(tfinterval<=0.0)
 					errx(EXIT_FAILURE,"\"%s\" is not a positive number.",optarg);
 				break;
 			case 'L':
-				//text_ok_check("L");
 				freq_lowest=atod2(optarg);
 				break;
 			case 'F':
-				//text_ok_check("F");
 				freq_functor=atod2(optarg);
 				break;
 			case 'A':
-				//text_ok_check("A");
 				ratio=(int32_t)atol2(optarg);
 				if(ratio<=0)
 					errx(EXIT_FAILURE,"\"%s\" is not a positive integer.",optarg);
 				break;
 			case 'D':
-				//text_ok_check("D");
 				tinterval=(int32_t)atol2(optarg);
 				if(tinterval<0)
 					errx(EXIT_FAILURE,"\"%s\" is not a non-negative integer.",optarg);
